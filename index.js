@@ -5,14 +5,37 @@ const morgan = require('morgan');
 const helmet = require('helmet');
 const knex = require('knex');
 const knexConfig = require('./knexfile.js');
+const session = require('express-session');
+const KnexSessionStore = require('connect-session-knex')(session);
 
 const db = knex(knexConfig.development);
-let logedIn = false;
+
 const server = express();
+
+const sessionConfig = {
+	name: 'ape', //default is sid
+	secret:
+		'alksjdfhalskjdhlkajshdfliuaht98h497fh7sdhv87qhp7hqperg9a8s7hg90a8shrf',
+	cookie: {
+		maxAge: 1000 * 15, //10 minutes
+		secure: false //only send the cookie over https, in production = true, otherwise, false
+	},
+	httpOnly: true, //JS can't touch this cookie
+	resave: false, //compliance with law????
+	saveUninitialized: false, //also compliance
+	store: new KnexSessionStore({
+		tablename: 'sessions',
+		sidfieldname: 'sid',
+		knex: db,
+		createtable: true, //if it doesnt exist, create it
+		clearInterval: 1000 * 60 * 10 //clears out expired sessions every 10 min
+	})
+};
 
 server.use(express.json());
 server.use(cors());
 server.use(morgan());
+server.use(session(sessionConfig));
 server.use(helmet());
 
 server.get('/', (req, res) => {
@@ -46,7 +69,7 @@ server.post('/api/login', (req, res) => {
 		.first()
 		.then(user => {
 			if (user && bcrypt.compareSync(creds.password, user.password)) {
-				logedIn = true;
+				req.session.user = user;
 				res.status(200).json({message: 'Logged in'});
 			} else {
 				res.status(401).json({message: 'You shall not pass!'});
@@ -56,31 +79,39 @@ server.post('/api/login', (req, res) => {
 });
 
 //logout
-server.post('/api/logout', (req, res) => {
-	///log out if logged in
-	if (logedIn) {
-        logedIn = false;
-        res.send({message : "Successfully logged out"})
-	} else{
-        res.send({message: 'Not logged in'})
-    }
+server.get('/api/logout', (req, res) => {
+	if (req.session) {
+		req.session.destroy(err => {
+			if (err) {
+				res.status(500).status('you can not log out');
+			} else {
+				res.status(200).send('bye bye');
+			}
+		});
+	} else {
+		res.json({message: 'logged out already'});
+	}
 });
 
-// protect this route, only authenticated users should see it
-server.get('/api/users', (req, res) => {
-	if (logedIn) {
-		db('users')
-			.select('id', 'username')
-			.then(users => {
-				res.json(users);
-			})
-			.catch(err => res.send(err));
+function protected(req, res, next) {
+	//if the user is logged in call next otherwise bounce
+	if (req.session && req.session.user) {
+		next();
 	} else {
-		res.send({
-			message:
-				'You are not logged in, and thus can not view those resourses'
+		res.status(401).json({
+			message: 'you shall not pass cus your not logged in'
 		});
 	}
+}
+
+// protect this route, only authenticated users should see it
+server.get('/api/users', protected, (req, res) => {
+	db('users')
+		.select('id', 'username')
+		.then(users => {
+			res.json(users);
+		})
+		.catch(err => res.send(err));
 });
 
 const port = 3300;
